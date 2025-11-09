@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Mongo Manager</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;background:#f6f8fa;color:#24292f}.container{max-width:800px;margin:auto;background:#fff;padding:20px;border:1px solid #d0d7de;border-radius:6px}button{padding:10px 16px;cursor:pointer;margin-right:10px;border-radius:6px;border:1px solid rgba(27,31,36,0.15);font-weight:600}.btn-green{background:#2da44e;color:#fff}.btn-blue{background:#0969da;color:#fff}.btn-red{background:#cf222e;color:#fff}.btn-gray{background:#f6f8fa}#output{background:#0d1117;color:#c9d1d9;padding:15px;border-radius:6px;height:300px;overflow-y:auto;white-space:pre-wrap;font-family:monospace}.status-badge{padding:4px 8px;border-radius:4px;font-weight:bold;color:#fff}.bg-green{background:#2da44e}.bg-red{background:#cf222e}.bg-gray{background:#6e7781}.section{margin-bottom:30px}</style>
+</head>
+<body>
+<div class="container">
+<h1>Mongo Manager 🍃 <span id="status-badge" class="status-badge bg-gray">CHECKING...</span></h1>
+<div class="section"><h2>Actions</h2><button id="deploy-btn" class="btn-green">Deploy / Update</button><button id="logs-btn" class="btn-gray">View Logs</button></div>
+<div class="section"><h2>Backup & Restore</h2>
+<a href="/backup" target="_blank"><button class="btn-blue">Download Backup (.gz)</button></a>
+<form id="restore-form" style="margin-top:15px;padding:15px;background:#f6f8fa;border-radius:6px"><label style="color:#cf222e;font-weight:bold">DANGER: Restore (Wipes data)</label><br><input type="file" name="backupFile" accept=".gz" required style="margin:10px 0"><button type="submit" class="btn-red">Restore from File</button></form></div>
+<div class="section"><h2>Firewall</h2><input type="text" id="ip-input" placeholder="e.g. 203.0.113.45" style="padding:8px;width:200px;margin-right:10px;border:1px solid #d0d7de;border-radius:6px"><button id="add-rule-btn" class="btn-gray">Allow IP</button></div>
+<h2>Console Output</h2><pre id="output">Ready.</pre>
+</div>
+<script>
+const out=document.getElementById("output"),badge=document.getElementById("status-badge");
+function log(m,e=false){out.textContent=(e?"ERROR:\n":"")+m+"\n\n"+out.textContent}
+async function up(){try{const r=await fetch("/status"),d=await r.json(),s=d.success?d.status.toLowerCase():"unknown";badge.textContent=s.toUpperCase();badge.className="status-badge "+(s==="running"?"bg-green":(s==="not_deployed"?"bg-gray":"bg-red"))}catch{badge.textContent="OFFLINE";badge.className="status-badge bg-red"}}
+document.getElementById("deploy-btn").onclick=async()=>{log("Deploying...");const r=await fetch("/deploy",{method:"POST"});log(JSON.stringify(await r.json(),null,2));up()};
+document.getElementById("logs-btn").onclick=async()=>{log("Fetching logs...");const r=await fetch("/logs"),d=await r.json();log(d.output||d.error)};
+document.getElementById("restore-form").onsubmit=async(e)=>{e.preventDefault();if(!confirm("WARNING: THIS WILL DELETE ALL DATA! Continue?"))return;log("Restoring... DO NOT CLOSE.");try{const r=await fetch("/restore",{method:"POST",body:new FormData(e.target)});log(JSON.stringify(await r.json(),null,2))}catch(e){log(e.message,true)}};
+document.getElementById("add-rule-btn").onclick=async()=>{const ip=document.getElementById("ip-input").value;if(!ip)return alert("Enter IP");log(`Adding rule for ${ip}...`);const r=await fetch("/add-rule",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ip})});log(JSON.stringify(await r.json(),null,2))};
+setInterval(up,5000);up();
+</script>
+</body>
+</html>
