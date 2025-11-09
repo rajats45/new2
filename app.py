@@ -1,4 +1,4 @@
-import subprocess, os, shlex, time
+import subprocess, os, shlex, time, urllib.parse
 from flask import Flask, render_template, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -14,7 +14,7 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 def run_command(command, timeout=60):
     try:
-        # capture_output=True ensures non-interactive mode to prevent hangs
+        # capture_output=True ensures non-interactive mode
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=timeout, cwd=PROJECT_DIR)
         return {"success": True, "output": result.stdout.strip()}
     except subprocess.TimeoutExpired: return {"success": False, "error": "Command timed out."}
@@ -33,8 +33,12 @@ def deploy():
 def backup():
     if DB_PASSWORD == "CHANGE_ME": return "SECURITY RISK: Change default password first.", 400
     host_path = os.path.join(UPLOAD_FOLDER, f"backup_{int(time.time())}.gz")
-    # CRITICAL FIX: Direct stream to host file, forced IPv4 (127.0.0.1)
-    cmd = f"docker exec my-mongo-db mongodump --host 127.0.0.1 --username=root --password={shlex.quote(DB_PASSWORD)} --authenticationDatabase=admin --archive --gzip"
+    
+    # UPDATED: Use Connection URI for safer auth passing
+    safe_pass = urllib.parse.quote_plus(DB_PASSWORD)
+    uri = f"mongodb://root:{safe_pass}@127.0.0.1:27017/?authSource=admin"
+    cmd = f"docker exec my-mongo-db mongodump --uri='{uri}' --archive --gzip"
+    
     try:
         with open(host_path, 'wb') as f:
             subprocess.run(cmd, shell=True, check=True, stdout=f, stderr=subprocess.PIPE, timeout=120)
@@ -48,17 +52,30 @@ def backup():
 
 @app.route('/restore', methods=['POST'])
 def restore():
+    # NEW: Check if container is actually running first
+    check = subprocess.run("docker inspect -f '{{.State.Running}}' my-mongo-db", shell=True, capture_output=True, text=True)
+    if check.stdout.strip() != 'true':
+        return jsonify({"success": False, "error": "MongoDB is NOT running. Please click 'Deploy' first."}), 400
+
     file = request.files.get('backupFile')
     if not file or file.filename == '': return jsonify({"success": False, "error": "No file."}), 400
     host_path = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
     try:
         file.save(host_path)
-        if not run_command(f"docker cp {host_path} my-mongo-db:/tmp/restore.gz", timeout=60)["success"]: return jsonify({"success": False, "error": "Copy failed."}), 500
-        # CRITICAL FIX: Restore from internal path, forced IPv4
-        restore_cmd = f"docker exec my-mongo-db mongorestore --host 127.0.0.1 --username=root --password={shlex.quote(DB_PASSWORD)} --authenticationDatabase=admin --archive=/tmp/restore.gz --gzip --drop"
+        # Copy file to container
+        if not run_command(f"docker cp {host_path} my-mongo-db:/tmp/restore.gz", timeout=60)["success"]: 
+            return jsonify({"success": False, "error": "Copy to container failed."}), 500
+        
+        # UPDATED: Use Connection URI to fix "Unauthorized createIndexes" error
+        # urllib.parse.quote_plus ensures weird characters in passwords don't break the command
+        safe_pass = urllib.parse.quote_plus(DB_PASSWORD)
+        uri = f"mongodb://root:{safe_pass}@127.0.0.1:27017/?authSource=admin"
+        restore_cmd = f"docker exec my-mongo-db mongorestore --uri='{uri}' --archive=/tmp/restore.gz --gzip --drop"
+        
         return jsonify(run_command(restore_cmd, timeout=300))
     finally:
         if os.path.exists(host_path): os.remove(host_path)
+        # Clean up the file inside the container too
         run_command("docker exec my-mongo-db rm -f /tmp/restore.gz", timeout=10)
 
 @app.route('/logs', methods=['GET'])
