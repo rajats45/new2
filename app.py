@@ -52,33 +52,31 @@ def backup():
 
 @app.route('/restore', methods=['POST'])
 def restore():
-    # 1. Safety Check: Is MongoDB running?
+    # 1. Safety Check
     check = subprocess.run("docker inspect -f '{{.State.Running}}' my-mongo-db", shell=True, capture_output=True, text=True)
     if check.stdout.strip() != 'true':
-        return jsonify({"success": False, "error": "MongoDB is NOT running. Please click 'Deploy' first."}), 400
+        return jsonify({"success": False, "error": "MongoDB is NOT running. Please deploy first."}), 400
 
     file = request.files.get('backupFile')
     if not file or file.filename == '': return jsonify({"success": False, "error": "No file."}), 400
-    host_path = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
+
+    # Save file to host's /tmp folder
+    filename = secure_filename(file.filename)
+    host_path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(host_path)
+
     try:
-        file.save(host_path)
-        # 2. Copy file to container
-        if not run_command(f"docker cp {host_path} my-mongo-db:/tmp/restore.gz", timeout=60)["success"]: 
-            return jsonify({"success": False, "error": "Copy to container failed."}), 500
-        
-        # 3. Restore Command (Standard flags, safest for complex passwords)
-        # We DO NOT use --host here, letting it connect internally by default.
-        restore_cmd = f"docker exec my-mongo-db mongorestore --username=root --password={shlex.quote(DB_PASSWORD)} --authenticationDatabase=admin --archive=/tmp/restore.gz --gzip --drop"
+        # 2. Universal Restore Command (The definitive fix)
+        # --rm: Auto-delete this temporary container when done
+        # --network container:my-mongo-db: Connect directly to the DB's network (allows using 127.0.0.1)
+        # -v /tmp:/backup: Let this container see the file we just uploaded to /tmp
+        restore_cmd = f"docker run --rm --network container:my-mongo-db -v {UPLOAD_FOLDER}:/backup mongo:latest mongorestore --host 127.0.0.1 --username root --password {shlex.quote(DB_PASSWORD)} --authenticationDatabase admin --archive=/backup/{filename} --gzip --drop"
         
         return jsonify(run_command(restore_cmd, timeout=600))
     finally:
+        # Clean up the file from host
         if os.path.exists(host_path): os.remove(host_path)
-        # Clean up the file inside the container
-        run_command("docker exec my-mongo-db rm -f /tmp/restore.gz", timeout=10)
         
-
-@app.route('/logs', methods=['GET'])
-def logs(): return jsonify(run_command("docker compose logs --tail=100", timeout=10))
 
 @app.route('/add-rule', methods=['POST'])
 def add_rule():
@@ -94,4 +92,5 @@ def get_status():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
+
 
