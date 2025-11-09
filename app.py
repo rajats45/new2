@@ -52,7 +52,7 @@ def backup():
 
 @app.route('/restore', methods=['POST'])
 def restore():
-    # NEW: Check if container is actually running first
+    # 1. Safety Check: Is MongoDB running?
     check = subprocess.run("docker inspect -f '{{.State.Running}}' my-mongo-db", shell=True, capture_output=True, text=True)
     if check.stdout.strip() != 'true':
         return jsonify({"success": False, "error": "MongoDB is NOT running. Please click 'Deploy' first."}), 400
@@ -62,21 +62,20 @@ def restore():
     host_path = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
     try:
         file.save(host_path)
-        # Copy file to container
+        # 2. Copy file to container
         if not run_command(f"docker cp {host_path} my-mongo-db:/tmp/restore.gz", timeout=60)["success"]: 
             return jsonify({"success": False, "error": "Copy to container failed."}), 500
         
-        # UPDATED: Use Connection URI to fix "Unauthorized createIndexes" error
-        # urllib.parse.quote_plus ensures weird characters in passwords don't break the command
-        safe_pass = urllib.parse.quote_plus(DB_PASSWORD)
-        uri = f"mongodb://root:{safe_pass}@127.0.0.1:27017/?authSource=admin"
-        restore_cmd = f"docker exec my-mongo-db mongorestore --uri='{uri}' --archive=/tmp/restore.gz --gzip --drop"
+        # 3. Restore Command (Standard flags, safest for complex passwords)
+        # We DO NOT use --host here, letting it connect internally by default.
+        restore_cmd = f"docker exec my-mongo-db mongorestore --username=root --password={shlex.quote(DB_PASSWORD)} --authenticationDatabase=admin --archive=/tmp/restore.gz --gzip --drop"
         
-        return jsonify(run_command(restore_cmd, timeout=300))
+        return jsonify(run_command(restore_cmd, timeout=600))
     finally:
         if os.path.exists(host_path): os.remove(host_path)
-        # Clean up the file inside the container too
+        # Clean up the file inside the container
         run_command("docker exec my-mongo-db rm -f /tmp/restore.gz", timeout=10)
+        
 
 @app.route('/logs', methods=['GET'])
 def logs(): return jsonify(run_command("docker compose logs --tail=100", timeout=10))
@@ -95,3 +94,4 @@ def get_status():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
+
