@@ -3,7 +3,7 @@ set -e
 
 # --- CONFIGURATION ---
 # !!! UPDATE THIS TO YOUR ACTUAL REPO URL !!!
-REPO_URL="https://github.com/rajats45/DBF.git"
+REPO_URL="https://github.com/rajats45/new2.git"
 INSTALL_DIR="/opt/mongo-tool"
 
 if [ "$EUID" -ne 0 ]; then echo "Please run as root (sudo)."; exit 1; fi
