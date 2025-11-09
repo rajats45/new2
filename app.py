@@ -52,30 +52,28 @@ def backup():
 
 @app.route('/restore', methods=['POST'])
 def restore():
-    # 1. Safety Check
-    check = subprocess.run("docker inspect -f '{{.State.Running}}' my-mongo-db", shell=True, capture_output=True, text=True)
-    if check.stdout.strip() != 'true':
-        return jsonify({"success": False, "error": "MongoDB is NOT running. Please deploy first."}), 400
+    # 1. Check if Running
+    if subprocess.run("docker inspect -f '{{.State.Running}}' my-mongo-db", shell=True, capture_output=True, text=True).stdout.strip() != 'true':
+        return jsonify({"success": False, "error": "MongoDB is NOT running. Deploy first."}), 400
 
     file = request.files.get('backupFile')
     if not file or file.filename == '': return jsonify({"success": False, "error": "No file."}), 400
-
-    # Save file to host's /tmp folder
-    filename = secure_filename(file.filename)
-    host_path = os.path.join(UPLOAD_FOLDER, filename)
+    host_path = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
     file.save(host_path)
 
     try:
-        # 2. Universal Restore Command (The definitive fix)
-        # --rm: Auto-delete this temporary container when done
-        # --network container:my-mongo-db: Connect directly to the DB's network (allows using 127.0.0.1)
-        # -v /tmp:/backup: Let this container see the file we just uploaded to /tmp
-        restore_cmd = f"docker run --rm --network container:my-mongo-db -v {UPLOAD_FOLDER}:/backup mongo:latest mongorestore --host 127.0.0.1 --username root --password {shlex.quote(DB_PASSWORD)} --authenticationDatabase admin --archive=/backup/{filename} --gzip --drop"
+        # 2. Copy to container
+        if not run_command(f"docker cp {host_path} my-mongo-db:/tmp/restore.gz", timeout=60)["success"]: 
+            return jsonify({"success": False, "error": "Copy failed."}), 500
         
-        return jsonify(run_command(restore_cmd, timeout=600))
+        # 3. Restore Securely:
+        # --nsExclude=admin.* : PREVENTS overwriting your working root password
+        # --noIndexRestore : PREVENTS the "Unauthorized" index error
+        cmd = f"docker exec my-mongo-db mongorestore --username=root --password={shlex.quote(DB_PASSWORD)} --authenticationDatabase=admin --archive=/tmp/restore.gz --gzip --drop --noIndexRestore --nsExclude=admin.*"
+        return jsonify(run_command(cmd, timeout=300))
     finally:
-        # Clean up the file from host
         if os.path.exists(host_path): os.remove(host_path)
+        run_command("docker exec my-mongo-db rm -f /tmp/restore.gz", timeout=10)
         
 
 @app.route('/add-rule', methods=['POST'])
@@ -92,5 +90,6 @@ def get_status():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
+
 
 
